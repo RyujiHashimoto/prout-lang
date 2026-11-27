@@ -868,7 +868,7 @@ op save_customer(customer: Customer) -> Id
     },
     "rejects": {"net(*)": ["secret"]},
     "declassify": [
-      {"label": "pii", "in": "masked_email", "role": "support"}
+      {"label": "pii", "in": "masked_email", "roles": ["support"]}
     ]
   }
 }
@@ -880,6 +880,28 @@ op save_customer(customer: Customer) -> Id
 - `rejects` — パターンが要求する拒否ラベル。アプリの拒否と和集合にする。
 - `declassify` — パターンが要求する declassify とロール。
 - `data_policy` がないパターンは public のみ。ラベル付きデータに適用すると失敗する（fail closed）。
+
+アプリ側では、エンティティのフィールドに `@label` を付け、`policy` ブロックで sink と declassify を宣言する。
+
+```text
+app expense_flow
+  stack nextjs, postgres
+  entity Expense
+    id: Id
+    amount: Money @internal
+    note: String @pii
+  policy
+    labels pii, internal, secret
+    sink notify(manager) accepts pii, internal
+    sink emit(audit) accepts internal
+    sink net(*) rejects secret
+    declassify pii in masked_email require role support, finance
+  pattern approval Expense
+    entity: Expense
+    approver: manager
+```
+
+`sink` は `accepts` と `rejects` を同じ行に書ける。`net(*)` は同じ種類の sink すべてに適用される。アプリ側にルールがない sink は「public のみ」として扱う。エンティティ型のフィールド（`applicant: Employee`）は参照先のラベルも辿るため、リンク先の `pii` が報告から抜け落ちない。ラベルが1つも宣言されていないアプリでは、パターンの `data_policy` は能力宣言として扱い、検査をスキップする（既存アプリの互換性のため）。
 
 ### 10.2 マージ規則
 
@@ -916,17 +938,27 @@ op save_customer(customer: Customer) -> Id
       "declassify": []
     }
   ],
+  "sinks": {
+    "net(email)": {"accepts": ["pii"], "rejects": ["secret"]},
+    "emit(audit)": {"accepts": ["internal"], "rejects": []}
+  },
+  "declassify": [
+    {"label": "pii", "in": "masked_email", "roles": ["support"]}
+  ],
   "guarantees": [
     "no pii to net(analytics)",
     "no secret to net(*)"
   ],
   "unresolved": [
     "native op stripe.refund declares sends none; its implementation is trusted"
-  ]
+  ],
+  "verified": true
 }
 ```
 
-`guarantees` は検査に成功した主張、`unresolved` は検査できず宣言を信頼している箇所。人間とAIの両方が、何が保証され、何が保証されていないかを読めるようにする。
+`ast_hash` はパターン層のアプリ仕様（エンティティ、ラベル、パターン、policy）を正規化した SHA-256 の先頭12桁で、契約層の AST ハッシュとは別物である。`sinks` と `declassify` は設計時の schema への追加で、マージ後の許可・拒否をそのまま読めるようにした。`verified` は `E-POLICY` を含むエラーがないことを示す。警告（custom の未検査など）は `verified: true` のまま `unresolved` に残る。
+
+`guarantees` は検査に成功した主張、`unresolved` は検査できず宣言を信頼している箇所。人間とAIの両方が、何が保証され、何が保証されていないかを読めるようにする。エラーがあるビルドでは `guarantees` は空になり、`verified` は `false` になる。
 
 ### 10.4 レポート表示
 
@@ -937,11 +969,13 @@ op save_customer(customer: Customer) -> Id
 - `declassify` の一覧（スコープ、ラベル、ロール、理由の有無）。
 - `unresolved` の件数。0件なら「すべてのフローを静的検査済み」と表示する。
 
+実装では、`unresolved` が1件以上なら件数と各項目を表示し、0件なら「すべてのフローを静的検査済み」と表示する。custom ブロックは実装を信頼するため、ラベル付きアプリでは `W-POLICY` の警告と `unresolved` の両方に残る。
+
 ## 11. 実装計画
 
 ### 11.0 実装状況（2026年11月）
 
-v0.1 の静的検査は `etsah.py` に実装済みで、`tests/test_information_flow.py` の43件が通る。v0.2 の分岐と PC ラベルは `tests/test_flow_branches.py` の29件で確認する。スイート全体は448件。`examples/information_flow_safe.etsah` はエラー0・警告1（`W-DECLASS`）、`examples/information_flow_leak.etsah` は `E-IFLOW-ARG` で失敗し、どちらも CI で確認している。`examples/refund_fixed.etsah` のハッシュは `bae8501e8b3f` のまま変わらない。
+v0.1 の静的検査は `etsah.py` に実装済みで、`tests/test_information_flow.py` の43件が通る。v0.2 の分岐と PC ラベルは `tests/test_flow_branches.py` の29件で確認する。パターン層の `data_policy` と `security.json` は `tests/test_data_policy.py` の25件で確認する。スイート全体は473件。`examples/information_flow_safe.etsah` はエラー0・警告1（`W-DECLASS`）、`examples/information_flow_leak.etsah` は `E-IFLOW-ARG` で失敗し、どちらも CI で確認している。`examples/refund_fixed.etsah` のハッシュは `bae8501e8b3f` のまま変わらない。
 
 | 項目 | 状態 |
 |---|---|
@@ -952,6 +986,8 @@ v0.1 の静的検査は `etsah.py` に実装済みで、`tests/test_information_
 | sink 解決と `sends` の必須条件 | 実装済み |
 | `declassify` とポリシー検査 | 実装済み |
 | `if` / `else` と PC ラベル（暗黙フロー） | 実装済み |
+| パターン `data_policy` とアプリ `policy` のマージ | 実装済み |
+| `security.json` とレポートの情報フロー表示 | 実装済み |
 | AST ハッシュの後方互換 | 実装済み |
 | サンプル2件と CI | 実装済み |
 | `SPEC.md` / `README.md` | 実装済み |
@@ -971,9 +1007,9 @@ v0.1 の静的検査は `etsah.py` に実装済みで、`tests/test_information_
 ### 11.2 v0.2（分岐とパターン層）
 
 - `if` / `else` を flow に追加し、PC ラベルを実装する。**実装済み**（2026年11月）。
-- パターン manifest の `data_policy`、マージ、`security.json`、レポートバッジを実装する。**未実装**。
-- `patterns/etsahc.py` の `build` に `security.json` を追加する。
-- パターンの `auth.roles` と `declassify.require role` を照合する。
+- パターン manifest の `data_policy`、マージ、`security.json`、レポートバッジを実装する。**実装済み**（2026年11月）。
+- `patterns/etsahc.py` の `build` に `security.json` を追加する。**実装済み**。
+- パターンの `auth.roles` と `declassify.require role` を照合する。**未実装**。現在は `policy` のロール名を文字列として照合し、`auth.roles` との整合は別途検査していない。
 
 ### 11.3 v0.3（実行時強制）
 
@@ -1056,4 +1092,4 @@ v0.1 の静的検査は `etsah.py` に実装済みで、`tests/test_information_
 5. **`policy` と CLI の `--allow-net` の統合** — 現在は別系統。`policy` に `allow net(...)` を追加して一本化するか、デプロイ設定とデータポリシーを分けたままにするか。
 6. **パターンの `data_policy` を必須にするか** — 現在は任意で、ない場合は public のみ。ラベル付きデータを扱うパターンには必須にした方がよいか。
 
-1〜5 は v0.1 の実装で今の挙動（`@public` は `E-LABEL`、レコードの `declassify` は `E-DECLASS`、wildcard reject は上書き不可、ラベル名は小文字のみ）を採用した。6 の `data_policy` は v0.2 でパターン層に入れる。`policy` と `--allow-net` の統合は未決のままで、現在は「データのラベル」と「ネットワーク先の許可」を別々に検査している。
+1〜5 は v0.1 の実装で今の挙動（`@public` は `E-LABEL`、レコードの `declassify` は `E-DECLASS`、wildcard reject は上書き不可、ラベル名は小文字のみ）を採用した。6 の `data_policy` は v0.2 でパターン層に入れ、ラベル付きアプリで `data_policy` のないパターンを `E-POLICY` にする fail closed を採用した。`policy` と `--allow-net` の統合は未決のままで、現在は「データのラベル」と「ネットワーク先の許可」を別々に検査している。

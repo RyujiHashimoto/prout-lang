@@ -179,6 +179,16 @@
   },
   "bound_roles": ["escalate_to"],
   "effects": ["read(entity)", "emit(audit)"],
+  "data_policy": {
+    "labels": ["pii", "internal", "secret"],
+    "sources": {"entity": ["pii", "internal"]},
+    "sinks": {
+      "emit(audit)": {"accepts": ["internal"]}
+    },
+    "rejects": {
+      "net(*)": ["secret"]
+    }
+  },
   "artifacts": [
     {"path": "db/schema.sql#ai_task_{target_lower}", "kind": "SQL", "lines": 16, "desc": "{Entity}の実行、冪等キー、予算カウンタ"},
     {"path": "lib/automation/{target_lower}.ts", "kind": "TS", "lines": 80, "desc": "{Entity}の起動、予算、再試行、ASTハッシュの監査行"},

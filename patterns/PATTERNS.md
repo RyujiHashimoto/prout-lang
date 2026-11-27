@@ -1,4 +1,4 @@
-# Etsah Patterns v0.1 — AIが速く書くためのパターン言語
+# Etsah Patterns v0.2 — AIが速く書くためのパターン言語
 
 ## 前提：人間が欲しがる形は有限
 
@@ -82,6 +82,38 @@ app shop
 `ai_task` の `automation` は、トリガーに対応するスロット、効果と予算の一致、社外への `emit` / `net` と `spend` と契約変更に `approval_gate` が要ることを仕様時に検査する。`count` は非負整数、`cron` は5欄の数値 cron である。使い方と、契約層へまだ移していない構文は `docs/ai_automation.md` に書いた。
 
 パターンは `registry/<name>.json` のマニフェストとして定義する。`etsahc.py index` が `registry/index.json` を作り、`etsahc.py find` が `intent` と `tags` から候補を返す。AIはコードを読まずに、この索引とマニフェストだけでパターンを発見・適用できる。
+
+## 情報フロー
+
+エンティティのフィールドに `@pii` のようなラベルを付けると、パターンコンパイラは「どのラベルが、どのパターンの、どの sink に流れるか」を仕様時に検査する。アプリ側は `policy` ブロックで許可と拒否を宣言する。
+
+```text
+app expense_flow
+  stack nextjs, postgres
+  entity Expense
+    id: Id
+    amount: Money @internal
+    note: String @pii
+  policy
+    labels pii, internal, secret
+    sink notify(manager) accepts pii, internal
+    sink emit(audit) accepts internal
+    sink net(*) rejects secret
+  pattern approval Expense
+    entity: Expense
+    approver: manager
+```
+
+パターンのマニフェストは `data_policy` で、読み込み元、要求する sink と許可ラベル、拒否ラベル、declassify を宣言する。アプリの `policy` とマージし、パターンが要求するラベルをアプリが許可していなければ `E-POLICY` で止まる。ラベル付きデータに `data_policy` のないパターンを適用した場合も `E-POLICY` になる（fail closed）。custom ブロックは実装を信頼するため、`W-POLICY` の警告と `security.json` の `unresolved` に残る。
+
+`build` は `security.json` を出力する。`labels`、パターンごとの `flows`、マージ後の `sinks`、`declassify`、検査に成功した `guarantees`、検査できていない `unresolved`、エラーの有無を示す `verified` を読める。`report.html` にもラベル、sink、declassify、未解決件数を表示する。
+
+```bash
+python3 etsahc.py build examples/data_policy.etsah --out build/data_policy
+cat build/data_policy/security.json
+```
+
+`examples/data_policy.etsah` は安全な例、`examples/data_policy_leak.etsah` は承認者への通知で `pii` を許可していない漏洩例で、後者は `E-POLICY` で終了コード 1 を返す。
 
 ## 展開の例
 

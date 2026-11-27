@@ -41,6 +41,7 @@ python3 etsahc.py build examples/expense.etsah
 | `states` / `transitions` | 承認などの状態遷移。遷移元・遷移先は `states` に含める |
 | `hooks` | `on_approved` など、承認後に呼ぶ処理の参照先と引数（`notify` の `channel` / `recipient`） |
 | `effects` | このパターンが起こす副作用。契約検査に渡す |
+| `data_policy` | 情報フローの宣言。`labels`、`sources`、`sinks`、`rejects`、`declassify`。ラベル付きアプリでこれが無いパターンは `E-POLICY` |
 | `artifacts` | 生成されるファイルと行数。実装の形を予測する |
 | `examples` | 実際にビルドが通る使用例 |
 | `provenance` | どのアプリから抽出したか。信頼性の判断材料 |

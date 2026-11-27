@@ -7,7 +7,7 @@ validates app specs against the manifests, and expands each pattern into a
 deterministic set of database, API, UI, and test artifacts.
 
 Commands:
-    build   validate and expand an app spec
+    build   validate and expand an app spec, and write security.json
     find    search the registry by intent, tag, name, or slot
     add     validate a manifest and add it to the registry
     index   rebuild registry/index.json for AI discovery
@@ -16,6 +16,7 @@ Commands:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import re
@@ -107,7 +108,20 @@ def preprocess(text: str) -> list[Line]:
 class Entity:
     name: str
     fields: dict[str, str] = field(default_factory=dict)
+    # Field-level information-flow labels: `email: String @pii @internal`.
+    field_labels: dict[str, list[str]] = field(default_factory=dict)
     line: int = 0
+
+
+@dataclass
+class AppPolicy:
+    """App-level information-flow policy declared in a `policy` block."""
+
+    labels: list[str] = field(default_factory=list)
+    # effect -> {"accepts": [label], "rejects": [label]}
+    sinks: dict[str, dict] = field(default_factory=dict)
+    # [{"label": "pii", "in": "masked", "roles": ["support"]}]
+    declassify: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -134,6 +148,7 @@ class App:
     entities: list[Entity] = field(default_factory=list)
     patterns: list[PatternUse] = field(default_factory=list)
     customs: list[CustomBlock] = field(default_factory=list)
+    policy: AppPolicy = field(default_factory=AppPolicy)
     source: str = ""
 
 
@@ -189,6 +204,8 @@ def parse_app(text: str) -> App:
         elif line.text.startswith("custom "):
             custom, i = parse_custom(lines, i)
             app.customs.append(custom)
+        elif line.text == "policy":
+            app.policy, i = parse_policy(lines, i)
         else:
             raise ValueError(f"unknown declaration {line.text!r} (line {line.no})")
     return app
@@ -202,10 +219,15 @@ def parse_entity(lines: list[Line], i: int) -> tuple[Entity, int]:
     entity = Entity(m.group(1), line=line.no)
     i += 1
     while i < len(lines) and lines[i].indent == 4:
-        fm = re.fullmatch(r"([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:<[^>]+>)?)", lines[i].text)
+        fm = re.fullmatch(
+            r"([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:<[^>]+>)?)(?:\s+((?:@[A-Za-z_]\w*\s*)+))?",
+            lines[i].text,
+        )
         if not fm:
             raise ValueError(f"bad field {lines[i].text!r} (line {lines[i].no})")
         entity.fields[fm.group(1)] = fm.group(2)
+        if fm.group(3):
+            entity.field_labels[fm.group(1)] = re.findall(r"@([A-Za-z_]\w*)", fm.group(3))
         i += 1
     return entity, i
 
@@ -248,6 +270,75 @@ def parse_custom(lines: list[Line], i: int) -> tuple[CustomBlock, int]:
     return custom, i
 
 
+_SINK_EFFECT = re.compile(r"(read|write|net|spend|emit|notify)\(([A-Za-z0-9_.*-]+)\)")
+
+
+def _label_list(raw: str, line: int) -> list[str]:
+    labels = [part.strip() for part in raw.split(",") if part.strip()]
+    for label in labels:
+        if not re.fullmatch(r"[A-Za-z_]\w*", label):
+            raise ValueError(f"bad label {label!r} (line {line})")
+    return labels
+
+
+def parse_policy(lines: list[Line], i: int) -> tuple[AppPolicy, int]:
+    """Parse a `policy` block at indent 2 with rules at indent 4.
+
+    policy
+      labels pii, secret
+      sink net(email) accepts pii
+      sink net(*) rejects secret
+      declassify pii in masked_email require role support
+    """
+    policy = AppPolicy()
+    i += 1
+    while i < len(lines) and lines[i].indent == 4:
+        text = lines[i].text
+        no = lines[i].no
+        if text.startswith("labels "):
+            for label in _label_list(text[7:], no):
+                if label not in policy.labels:
+                    policy.labels.append(label)
+        elif text.startswith("sink "):
+            m = re.fullmatch(r"sink\s+([a-z]+\([^)]*\))\s*(.*)", text)
+            if not m or not _SINK_EFFECT.fullmatch(m.group(1)):
+                raise ValueError(f"bad sink rule {text!r} (line {no})")
+            effect = m.group(1)
+            rest = m.group(2)
+            rule = policy.sinks.setdefault(effect, {"accepts": [], "rejects": []})
+            clauses = list(
+                re.finditer(r"(accepts|rejects)\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)", rest)
+            )
+            if not clauses:
+                raise ValueError(f"sink rule needs accepts or rejects (line {no})")
+            consumed = 0
+            for clause in clauses:
+                if rest[consumed:clause.start()].strip():
+                    raise ValueError(f"bad sink rule {text!r} (line {no})")
+                consumed = clause.end()
+                key = clause.group(1)
+                for label in _label_list(clause.group(2), no):
+                    if label not in rule[key]:
+                        rule[key].append(label)
+            if rest[consumed:].strip():
+                raise ValueError(f"bad sink rule {text!r} (line {no})")
+        elif text.startswith("declassify "):
+            m = re.fullmatch(
+                r"declassify\s+([A-Za-z_]\w*)\s+in\s+([A-Za-z_]\w*)\s+require\s+role\s+(.+)",
+                text,
+            )
+            if not m:
+                raise ValueError(f"bad declassify rule {text!r} (line {no})")
+            roles = [part.strip() for part in m.group(3).split(",") if part.strip()]
+            if not roles:
+                raise ValueError(f"declassify needs a role (line {no})")
+            policy.declassify.append({"label": m.group(1), "in": m.group(2), "roles": roles})
+        else:
+            raise ValueError(f"unknown policy rule {text!r} (line {no})")
+        i += 1
+    return policy, i
+
+
 # ---------------------------------------------------------------------------
 # Pattern manifests
 # ---------------------------------------------------------------------------
@@ -280,6 +371,9 @@ class PatternManifest:
     requires_target: bool = False
     # Cross-slot rules for an automated task. Empty on every other pattern.
     automation: dict = field(default_factory=dict)
+    # Information-flow contract. None means "public data only" (fail closed
+    # when the app declares labels).
+    data_policy: Optional[dict] = None
 
     def to_index(self) -> dict:
         data = {
@@ -314,6 +408,11 @@ class PatternManifest:
                 ],
                 "change_message": self.automation.get("change_message", ""),
             }
+        if self.data_policy is not None:
+            data["data_policy"] = {
+                "labels": sorted(_policy_labels(self.data_policy)),
+                "sinks": sorted(self.data_policy.get("sinks", {})),
+            }
         return data
 
 
@@ -340,7 +439,103 @@ def manifest_from_dict(data: dict) -> PatternManifest:
         bound_roles=data.get("bound_roles", []),
         requires_target=bool(data.get("requires_target", False)),
         automation=data.get("automation") or {},
+        data_policy=data.get("data_policy"),
     )
+
+
+def _policy_labels(policy: dict) -> set[str]:
+    """Every label named by a data_policy, including nested rules."""
+    labels = set(policy.get("labels", []) or [])
+    for value in (policy.get("sources", {}) or {}).values():
+        labels.update(value or [])
+    for rule in (policy.get("sinks", {}) or {}).values():
+        labels.update((rule or {}).get("accepts", []) or [])
+    for value in (policy.get("rejects", {}) or {}).values():
+        labels.update(value or [])
+    for rule in policy.get("declassify", []) or []:
+        if isinstance(rule, dict) and rule.get("label"):
+            labels.add(rule["label"])
+    return labels
+
+
+def _validate_data_policy(policy: dict) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(policy, dict):
+        return ["data_policy must be an object"]
+    labels = policy.get("labels", [])
+    if not isinstance(labels, list) or any(
+        not isinstance(label, str) or not re.fullmatch(r"[A-Za-z_]\w*", label) for label in labels
+    ):
+        errors.append("data_policy.labels must be a list of label names")
+        labels = []
+    known = set(labels)
+
+    sources = policy.get("sources", {})
+    if not isinstance(sources, dict):
+        errors.append("data_policy.sources must be an object")
+        sources = {}
+    for source, source_labels in sources.items():
+        if not isinstance(source, str) or not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?", source):
+            errors.append(f"data_policy source {source!r} is not an entity or entity.field")
+        if not isinstance(source_labels, list) or not source_labels:
+            errors.append(f"data_policy source {source!r} needs a non-empty label list")
+            continue
+        for label in source_labels:
+            if label not in known:
+                errors.append(f"data_policy source {source!r} uses undeclared label {label!r}")
+
+    sinks = policy.get("sinks", {})
+    if not isinstance(sinks, dict):
+        errors.append("data_policy.sinks must be an object")
+        sinks = {}
+    for effect, rule in sinks.items():
+        if not isinstance(effect, str) or not _SINK_EFFECT.fullmatch(effect):
+            errors.append(f"data_policy sink {effect!r} is not an effect like net(email)")
+            continue
+        if not isinstance(rule, dict):
+            errors.append(f"data_policy sink {effect!r} must be an object")
+            continue
+        accepts = rule.get("accepts", [])
+        if not isinstance(accepts, list):
+            errors.append(f"data_policy sink {effect!r} accepts must be a list")
+            continue
+        for label in accepts:
+            if label not in known:
+                errors.append(f"data_policy sink {effect!r} accepts undeclared label {label!r}")
+
+    rejects = policy.get("rejects", {})
+    if not isinstance(rejects, dict):
+        errors.append("data_policy.rejects must be an object")
+        rejects = {}
+    for effect, rejected in rejects.items():
+        if not isinstance(effect, str) or not _SINK_EFFECT.fullmatch(effect):
+            errors.append(f"data_policy reject {effect!r} is not an effect like net(*)")
+            continue
+        if not isinstance(rejected, list):
+            errors.append(f"data_policy reject {effect!r} must be a label list")
+            continue
+        for label in rejected:
+            if label not in known:
+                errors.append(f"data_policy reject {effect!r} uses undeclared label {label!r}")
+
+    declassify = policy.get("declassify", [])
+    if not isinstance(declassify, list):
+        errors.append("data_policy.declassify must be a list")
+        declassify = []
+    for rule in declassify:
+        if not isinstance(rule, dict):
+            errors.append("data_policy.declassify entries must be objects")
+            continue
+        label = rule.get("label")
+        scope = rule.get("in") or rule.get("scope")
+        roles = rule.get("roles", [rule.get("role")] if rule.get("role") else [])
+        if label not in known:
+            errors.append(f"data_policy declassify uses undeclared label {label!r}")
+        if not isinstance(scope, str) or not re.fullmatch(r"[A-Za-z_]\w*", scope):
+            errors.append("data_policy declassify needs an `in` scope")
+        if not isinstance(roles, list) or not roles or any(not isinstance(r, str) for r in roles):
+            errors.append("data_policy declassify needs a role or roles")
+    return errors
 
 
 def validate_manifest(m: PatternManifest) -> list[str]:
@@ -393,6 +588,8 @@ def validate_manifest(m: PatternManifest) -> list[str]:
             errors.append(f"bound role slot {role_slot!r} is not a slot")
     if m.automation:
         errors.extend(_validate_automation(m))
+    if m.data_policy is not None:
+        errors.extend(_validate_data_policy(m.data_policy))
     return errors
 
 
@@ -1246,7 +1443,362 @@ def validate(app: App, registry: dict[str, PatternManifest]) -> list[Diagnostic]
     for note in staffing_rules.analyze(app):
         diags.append(Diagnostic(note.code, note.message, note.line, note.severity))
 
+    security = analyze_security(app, registry)
+    diags.extend(security.problems)
     return diags
+
+
+# ---------------------------------------------------------------------------
+# Information flow across patterns
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SecurityReport:
+    labels: list[str] = field(default_factory=list)
+    flows: list[dict] = field(default_factory=list)
+    guarantees: list[str] = field(default_factory=list)
+    unresolved: list[str] = field(default_factory=list)
+    sinks: dict[str, dict] = field(default_factory=dict)
+    declassify: list[dict] = field(default_factory=list)
+    problems: list[Diagnostic] = field(default_factory=list)
+    checked: bool = False
+
+
+def app_hash(app: App) -> str:
+    """A stable 12-hex hash of the parsed app spec (the pattern-layer AST)."""
+    payload = {
+        "name": app.name,
+        "stack": app.stack,
+        "freedom": app.freedom,
+        "entities": [
+            {
+                "name": e.name,
+                "fields": e.fields,
+                "labels": {key: sorted(value) for key, value in sorted(e.field_labels.items())},
+            }
+            for e in app.entities
+        ],
+        "patterns": [
+            {"name": p.name, "target": p.target, "slots": p.slots} for p in app.patterns
+        ],
+        "customs": [{"name": c.name, "why": c.why, "lines": c.lines} for c in app.customs],
+        "policy": {
+            "labels": sorted(app.policy.labels),
+            "sinks": {
+                effect: {
+                    "accepts": sorted(rule.get("accepts", [])),
+                    "rejects": sorted(rule.get("rejects", [])),
+                }
+                for effect, rule in sorted(app.policy.sinks.items())
+            },
+            "declassify": sorted(
+                (
+                    {
+                        "label": rule.get("label", ""),
+                        "in": rule.get("in", ""),
+                        "roles": sorted(rule.get("roles", [])),
+                    }
+                    for rule in app.policy.declassify
+                ),
+                key=lambda rule: (rule["label"], rule["in"], rule["roles"]),
+            ),
+        },
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _source_labels(app: App, name: str, field_name: str = "", seen: Optional[set[str]] = None) -> set[str]:
+    """Labels reachable from an entity or one of its fields.
+
+    A field whose type is another entity (for example `applicant: Employee`)
+    carries that entity's labels, so a report cannot hide linked PII.
+    """
+    entity = next((e for e in app.entities if e.name == name), None)
+    if entity is None:
+        return set()
+    seen = set(seen or ())
+    if name in seen:
+        return set()
+    seen.add(name)
+    labels: set[str] = set()
+    if field_name:
+        labels.update(entity.field_labels.get(field_name, []))
+        linked = entity.fields.get(field_name, "")
+        if linked in {e.name for e in app.entities}:
+            labels |= _source_labels(app, linked, "", seen)
+        return labels
+    for field_labels in entity.field_labels.values():
+        labels.update(field_labels)
+    for field_type in entity.fields.values():
+        if field_type in {e.name for e in app.entities}:
+            labels |= _source_labels(app, field_type, "", seen)
+    return labels
+
+
+def _all_entity_labels(app: App) -> set[str]:
+    labels = set(app.policy.labels)
+    for entity in app.entities:
+        for field_labels in entity.field_labels.values():
+            labels.update(field_labels)
+    return labels
+
+
+def _resolve_effect(effect: str, pattern: PatternUse) -> str:
+    """Substitute `{slot}` and bare slot names inside a sink effect."""
+    out = effect
+    for slot_name, raw in pattern.slots.items():
+        out = out.replace("{" + slot_name + "}", slot_value(raw))
+    m = _SINK_EFFECT.fullmatch(out)
+    if not m:
+        return out
+    kind, inner = m.group(1), m.group(2)
+    if inner in pattern.slots:
+        inner = slot_value(pattern.slots[inner])
+    elif inner == "entity" and pattern.target:
+        inner = pattern.slots.get("entity", pattern.target)
+    return f"{kind}({inner})"
+
+
+def _resolve_source(source: str, pattern: PatternUse, entity: Optional[Entity]) -> tuple[str, str]:
+    """Return (resolved entity or entity.field, field name or "")."""
+    if source == "entity":
+        name = pattern.slots.get("entity", pattern.target or (entity.name if entity else ""))
+        return name, ""
+    if source.startswith("entity."):
+        name = pattern.slots.get("entity", pattern.target or (entity.name if entity else ""))
+        return f"{name}.{source.split('.', 1)[1]}", source.split(".", 1)[1]
+    if source in pattern.slots:
+        value = slot_value(pattern.slots[source])
+        return value, ""
+    return source, ""
+
+
+def _app_sink_rule(app: App, effect: str) -> tuple[set[str], set[str]]:
+    kind = effect.split("(", 1)[0]
+    accepts: set[str] = set()
+    rejects: set[str] = set()
+    for key in (effect, f"{kind}(*)"):
+        rule = app.policy.sinks.get(key)
+        if rule:
+            accepts.update(rule.get("accepts", []))
+            rejects.update(rule.get("rejects", []))
+    return accepts, rejects
+
+
+def _match_declassify(app: App, label: str, scope: str, roles: list[str]) -> Optional[dict]:
+    for rule in app.policy.declassify:
+        if rule.get("label") != label or rule.get("in") != scope:
+            continue
+        if set(roles) & set(rule.get("roles", [])):
+            return rule
+    return None
+
+
+def analyze_security(app: App, registry: dict[str, PatternManifest]) -> SecurityReport:
+    """Merge app and pattern policies, and report what is (not) guaranteed."""
+    report = SecurityReport()
+
+    def problem(code: str, message: str, line: int = 0, severity: str = "error") -> None:
+        report.problems.append(Diagnostic(code, message, line, severity))
+
+    app_labels = _all_entity_labels(app)
+    if not app_labels:
+        # No labels means there is nothing to track. Pattern data_policy is a
+        # capability declaration, not data: it must not force every app that
+        # uses the pattern to repeat a policy.
+        report.labels = []
+        report.guarantees.append("no labeled data is declared")
+        return report
+
+    pattern_labels: set[str] = set()
+    for use in app.patterns:
+        manifest = registry.get(use.name)
+        if manifest and manifest.data_policy:
+            pattern_labels |= _policy_labels(manifest.data_policy)
+    report.labels = sorted(app_labels | pattern_labels)
+    report.checked = True
+
+    known = app_labels
+    for effect, rule in app.policy.sinks.items():
+        for key in ("accepts", "rejects"):
+            for label in rule.get(key, []):
+                if label not in known:
+                    problem(
+                        "E-POLICY",
+                        f"app policy {effect} {key} label {label!r} is not declared on any field",
+                    )
+    for rule in app.policy.declassify:
+        if rule.get("label") not in known:
+            problem(
+                "E-POLICY",
+                f"app declassify label {rule.get('label')!r} is not declared on any field",
+            )
+
+    # Start from the app policy so sinks with no pattern use are still visible.
+    for effect, rule in app.policy.sinks.items():
+        report.sinks[effect] = {
+            "accepts": sorted(set(rule.get("accepts", []))),
+            "rejects": sorted(set(rule.get("rejects", []))),
+        }
+
+    for use in app.patterns:
+        manifest = registry.get(use.name)
+        if not manifest:
+            continue
+        entity = entity_for(app, use)
+        policy = manifest.data_policy
+        if policy is None:
+            report.unresolved.append(
+                f"pattern {use.name}: no data_policy; treated as public data only"
+            )
+            if app_labels:
+                problem(
+                    "E-POLICY",
+                    f"pattern {use.name} has no data_policy but the app declares labels; "
+                    "add data_policy to the manifest or remove the labels",
+                    use.line,
+                )
+            continue
+
+        flow = {
+            "name": f"{use.name}:{use.target}" if use.target else use.name,
+            "sources": [],
+            "sinks": [],
+            "declassify": [],
+            "labels": [],
+        }
+        for source, declared in (policy.get("sources", {}) or {}).items():
+            resolved, field = _resolve_source(source, use, entity)
+            if not resolved:
+                problem("E-POLICY", f"pattern {use.name} source {source!r} cannot be resolved", use.line)
+                continue
+            base = resolved.split(".", 1)[0]
+            if base not in {e.name for e in app.entities}:
+                problem(
+                    "E-POLICY",
+                    f"pattern {use.name} source {source!r} resolves to unknown entity {base!r}",
+                    use.line,
+                )
+                continue
+            actual = _source_labels(app, base, field)
+            labels = set(declared or []) | set(actual)
+            flow["sources"].append(f"read({resolved})")
+            flow["labels"] = sorted(set(flow["labels"]) | labels)
+
+        pattern_rejects: dict[str, set[str]] = {}
+        for effect, labels in (policy.get("rejects", {}) or {}).items():
+            resolved = _resolve_effect(effect, use)
+            pattern_rejects.setdefault(resolved, set()).update(labels)
+
+        for effect, rule in (policy.get("sinks", {}) or {}).items():
+            resolved = _resolve_effect(effect, use)
+            needed = set(rule.get("accepts", []) or [])
+            app_accepts, app_rejects = _app_sink_rule(app, resolved)
+            missing = needed - app_accepts
+            blocked = needed & app_rejects
+            if missing:
+                problem(
+                    "E-POLICY",
+                    f"pattern {use.name} requires {sorted(missing)} at {resolved}, "
+                    "but the app policy does not accept it",
+                    use.line,
+                )
+            if blocked:
+                problem(
+                    "E-POLICY",
+                    f"pattern {use.name} sends {sorted(blocked)} to {resolved}, "
+                    "but the app policy rejects it",
+                    use.line,
+                )
+            merged = report.sinks.setdefault(resolved, {"accepts": [], "rejects": []})
+            merged["accepts"] = sorted(set(merged["accepts"]) | (needed & app_accepts))
+            merged["rejects"] = sorted(set(merged["rejects"]) | app_rejects)
+            flow["sinks"].append(resolved)
+
+        for resolved, labels in pattern_rejects.items():
+            merged = report.sinks.setdefault(resolved, {"accepts": [], "rejects": []})
+            merged["rejects"] = sorted(set(merged["rejects"]) | labels)
+
+        for rule in policy.get("declassify", []) or []:
+            label = rule.get("label", "")
+            scope = rule.get("in") or rule.get("scope", "")
+            roles = rule.get("roles") or ([rule["role"]] if rule.get("role") else [])
+            if not _match_declassify(app, label, scope, roles):
+                problem(
+                    "E-POLICY",
+                    f"pattern {use.name} requires declassify {label} in {scope} "
+                    f"for {roles}, but the app policy does not allow it",
+                    use.line,
+                )
+                continue
+            entry = {"label": label, "in": scope, "roles": sorted(roles)}
+            if entry not in report.declassify:
+                report.declassify.append(entry)
+            flow["declassify"].append(entry)
+
+        if flow["sources"] or flow["sinks"]:
+            report.flows.append(flow)
+
+    for rule in app.policy.declassify:
+        entry = {
+            "label": rule.get("label", ""),
+            "in": rule.get("in", ""),
+            "roles": sorted(rule.get("roles", [])),
+        }
+        if entry not in report.declassify:
+            report.declassify.append(entry)
+
+    # `net(*) rejects secret` applies to every concrete net sink. Resolve the
+    # wildcard into the concrete rules so a narrower `net(email) accepts
+    # secret` cannot silently override it.
+    for effect in list(report.sinks):
+        if effect.endswith("(*)"):
+            continue
+        kind = effect.split("(", 1)[0]
+        wildcard = report.sinks.get(f"{kind}(*)")
+        if not wildcard:
+            continue
+        rule = report.sinks[effect]
+        rule["accepts"] = sorted(set(rule.get("accepts", [])) | set(wildcard.get("accepts", [])))
+        rule["rejects"] = sorted(set(rule.get("rejects", [])) | set(wildcard.get("rejects", [])))
+
+    for custom in app.customs:
+        report.unresolved.append(
+            f"custom {custom.name} ({custom.lines} lines): its implementation is trusted"
+        )
+        if app_labels:
+            problem(
+                "W-POLICY",
+                f"custom {custom.name} is not covered by the pattern data_policy; "
+                "labeled data may flow through it",
+                custom.line,
+                "warning",
+            )
+
+    # A sink that accepts a rejected label is a contradiction, not a guarantee.
+    for effect, rule in report.sinks.items():
+        conflict = set(rule.get("accepts", [])) & set(rule.get("rejects", []))
+        if conflict:
+            problem(
+                "E-POLICY",
+                f"sink {effect} accepts and rejects the same labels: {sorted(conflict)}",
+            )
+
+    errors = [item for item in report.problems if item.severity == "error"]
+    if not errors:
+        if not report.labels:
+            report.guarantees.append("no labeled data is declared")
+        elif not report.sinks:
+            report.guarantees.append("no labeled data leaves the app through a declared sink")
+        else:
+            for effect in sorted(report.sinks):
+                rule = report.sinks[effect]
+                for label in report.labels:
+                    if label in rule.get("rejects", []) or label not in rule.get("accepts", []):
+                        report.guarantees.append(f"no {label} to {effect}")
+        report.guarantees = sorted(set(report.guarantees))
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -1345,7 +1897,12 @@ def spec_lines(source: str) -> int:
     return sum(1 for line in source.splitlines() if line.strip() and not line.strip().startswith("#"))
 
 
-def render_report(app: App, diags: list[Diagnostic], arts: list[Artifact]) -> str:
+def render_report(
+    app: App,
+    diags: list[Diagnostic],
+    arts: list[Artifact],
+    security: Optional[SecurityReport] = None,
+) -> str:
     total_lines = sum(a.lines for a in arts)
     spec = spec_lines(app.source)
     ratio = round(total_lines / spec, 1) if spec else 0
@@ -1460,6 +2017,44 @@ def render_report(app: App, diags: list[Diagnostic], arts: list[Artifact]) -> st
         "open": "パターン + 任意コード。自由度最大、検証はEtsahへ。",
     }.get(app.freedom, "")
 
+    security_html = ""
+    if security is not None:
+        label_badges = "".join(
+            f'<span class="sec-badge">{esc(label)}</span>' for label in security.labels
+        ) or '<span class="sec-muted">ラベルなし</span>'
+        sink_rows = "".join(
+            f'<div class="sec-row"><code>{esc(effect)}</code>'
+            f'<span class="sec-ok">accepts: {esc(", ".join(rule.get("accepts", [])) or "public only")}</span>'
+            f'<span class="sec-no">rejects: {esc(", ".join(rule.get("rejects", [])) or "-")}</span></div>'
+            for effect, rule in sorted(security.sinks.items())
+        ) or '<div class="sec-muted">sink は宣言されていない。</div>'
+        declassify_rows = "".join(
+            f'<div class="sec-row"><code>{esc(rule["label"])}</code>'
+            f'<span>scope: {esc(rule["in"])}</span>'
+            f'<span>roles: {esc(", ".join(rule["roles"]))}</span></div>'
+            for rule in security.declassify
+        ) or '<div class="sec-muted">declassify は宣言されていない。</div>'
+        if not security.checked:
+            unresolved_html = '<div class="sec-muted">ラベルが宣言されていないため、情報フロー検査は対象外。</div>'
+        elif security.unresolved:
+            unresolved_html = (
+                f'<div class="sec-warn">{len(security.unresolved)} 件の未解決事項</div>'
+                + "".join(f'<div class="sec-row sec-muted">{esc(item)}</div>' for item in security.unresolved)
+            )
+        else:
+            unresolved_html = '<div class="sec-ok">すべてのフローを静的検査済み</div>'
+        security_html = f"""
+  <div class="panel">
+    <h2>情報フロー</h2>
+    <div class="sec-row"><span class="sec-label">LABELS</span>{label_badges}</div>
+    <div class="sec-row"><span class="sec-label">SINKS</span></div>
+    {sink_rows}
+    <div class="sec-row"><span class="sec-label">DECLASSIFY</span></div>
+    {declassify_rows}
+    {unresolved_html}
+  </div>
+"""
+
     css = """
     :root {
       --bg: #f4f1e9; --card: #fffdf8; --ink: #1e2328; --muted: #6d7280;
@@ -1484,6 +2079,14 @@ def render_report(app: App, diags: list[Diagnostic], arts: list[Artifact]) -> st
     .sub { color: var(--muted); font-size: 14px; margin-bottom: 16px; }
     .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 22px; }
     .chip { font-size: 11px; padding: 4px 9px; border-radius: 999px; background: #fffefa; border: 1px solid var(--line); color: #4b5563; }
+    .sec-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px dashed #ece6d9; font-size: 12px; }
+    .sec-row:last-child { border-bottom: 0; }
+    .sec-label { font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: .12em; color: var(--muted); min-width: 88px; }
+    .sec-badge { font-family: ui-monospace, Menlo, monospace; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: var(--purple-soft); color: var(--purple); }
+    .sec-ok { color: var(--green); }
+    .sec-no { color: var(--red); }
+    .sec-warn { color: var(--amber); font-weight: 650; margin-top: 6px; }
+    .sec-muted { color: var(--muted); }
     .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 18px; }
     .metric { background: var(--card); border: 1px solid var(--line); border-radius: 13px; padding: 14px 15px; box-shadow: var(--shadow); }
     .metric .value { font-size: 26px; font-weight: 750; letter-spacing: -.03em; line-height: 1.2; }
@@ -1573,6 +2176,8 @@ def render_report(app: App, diags: list[Diagnostic], arts: list[Artifact]) -> st
     <h2>展開されたもの</h2>
     {''.join(group_html)}
   </div>
+
+  {security_html}
 
   <div class="panel">
     <h2>人間が見るもの</h2>
@@ -2047,6 +2652,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         return 2
 
     diags = validate(app, registry)
+    security = analyze_security(app, registry)
     arts = expand(app, registry)
     total = sum(a.lines for a in arts)
     spec = spec_lines(text)
@@ -2055,6 +2661,14 @@ def cmd_build(args: argparse.Namespace) -> int:
     print(f"stack: {', '.join(app.stack)}  freedom: {app.freedom}")
     print(f"entities: {len(app.entities)}  patterns: {len(app.patterns)}  custom: {len(app.customs)}")
     print(f"spec lines: {spec}  generated lines: {total:,}  expansion: {round(total/spec, 1) if spec else 0}x")
+    if security.checked:
+        print(
+            f"information flow: labels {', '.join(security.labels) or '-'}  "
+            f"flows {len(security.flows)}  guarantees {len(security.guarantees)}  "
+            f"unresolved {len(security.unresolved)}"
+        )
+    else:
+        print("information flow: skipped (no labels declared)")
     if diags:
         print()
         for d in diags:
@@ -2069,7 +2683,7 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    report = render_report(app, diags, arts)
+    report = render_report(app, diags, arts, security)
     (out / "report.html").write_text(report, encoding="utf-8")
     has_errors = any(d.severity == "error" for d in diags)
     demo = "" if has_errors else render_demo(app, arts)
@@ -2097,14 +2711,36 @@ def cmd_build(args: argparse.Namespace) -> int:
         ],
         "diagnostics": [d.render() for d in diags],
         "runtime_checks": checks,
+        "security": {
+            "labels": security.labels,
+            "flows": len(security.flows),
+            "guarantees": len(security.guarantees),
+            "unresolved": len(security.unresolved),
+            "verified": not has_errors,
+        },
     }
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    security_json = {
+        "schema_version": 1,
+        "ast_hash": app_hash(app),
+        "labels": security.labels,
+        "flows": security.flows,
+        "sinks": security.sinks,
+        "declassify": security.declassify,
+        "guarantees": security.guarantees,
+        "unresolved": security.unresolved,
+        "verified": not has_errors,
+    }
+    (out / "security.json").write_text(
+        json.dumps(security_json, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(f"wrote {out / 'report.html'}")
     if demo:
         print(f"wrote {out / 'demo.html'}")
     elif has_errors:
         print("demo.html skipped because the spec has errors")
     print(f"wrote {out / 'manifest.json'}")
+    print(f"wrote {out / 'security.json'}")
     return 1 if any(d.severity == "error" for d in diags) else 0
 
 

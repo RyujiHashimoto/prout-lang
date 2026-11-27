@@ -20,6 +20,12 @@
     {"path": "tests/{plural}.test.ts", "kind": "TEST", "lines": 85, "desc": "CRUDの契約テスト"},
     {"path": "db/schema.sql#{plural}", "kind": "SQL", "lines": 6, "per_field": 2, "desc": "{Entity}テーブル"}
   ],
+  "data_policy": {
+    "labels": ["pii", "internal"],
+    "sources": {"entity": ["pii", "internal"]},
+    "sinks": {},
+    "rejects": {}
+  },
   "examples": ["examples/shop.etsah"],
   "provenance": {"author": "橋元 龍二", "date": "2026-11-22"}
 }

@@ -215,10 +215,12 @@ Etsah Patterns: expense
 stack: nextjs, postgres  freedom: guided
 entities: 2  patterns: 3  custom: 1
 spec lines: 28  generated lines: 1,264  expansion: 45.1x
+information flow: skipped (no labels declared)
 OK — no issues
 wrote patterns/build/expense/report.html
 wrote patterns/build/expense/demo.html
 wrote patterns/build/expense/manifest.json
+wrote patterns/build/expense/security.json
 ```
 
 28 行の経費仕様を展開し、`patterns/build/expense/demo.html` を書きます。ブラウザでそのファイルを開いてください。サーバは要りません。申請、承認、差し戻し、却下を操作できます。承認された処理は、承認の後にだけ動きます。`patterns/build/` は gitignore です。
@@ -514,6 +516,7 @@ else
 `examples/implicit_flow_leak.etsah` は `E-IFLOW-RET` で失敗し、`examples/implicit_flow_safe.etsah` は `W-DECLASS` 1件だけで通ります。`else` を書かずに片方だけ `return` する場合も、その後ろの公開の戻り値は同じラベルで検査します。条件が `pii` の分岐から、`pii` を受け取らない sink を呼ぶと `E-IFLOW-SINK` になります。
 
 ラベル宣言も注釈もないプログラムでは検査を省略するため、既存の AST ハッシュは変わりません。式のラベル推論、sink の解決、`sends` の必須条件、診断コード、現時点の限界（代入・ループ・例外、コレクション、ラベル多相）は [docs/information-flow.md](docs/information-flow.md) と [SPEC.md](SPEC.md) にまとめています。
+パターン層にも同じ考え方を入れました。アプリ仕様のフィールドに `note: String @pii` と書き、`policy` ブロックで sink の許可・拒否と `declassify` を宣言します。パターンのマニフェストは `data_policy` で、読み込み元、要求する sink、拒否ラベルを宣言します。両者をマージし、パターンが要求するラベルをアプリが許可していなければ `E-POLICY` で止まります。`data_policy` のないパターンをラベル付きデータに適用した場合も fail closed です。`build` は `security.json` を出力し、`flows`、`sinks`、`guarantees`、`unresolved`、`verified` を残します。安全な例は [patterns/examples/data_policy.etsah](patterns/examples/data_policy.etsah)、漏洩例は [patterns/examples/data_policy_leak.etsah](patterns/examples/data_policy_leak.etsah) です。
 
 ## 参加する
 

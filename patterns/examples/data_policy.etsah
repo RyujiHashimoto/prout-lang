@@ -1,0 +1,34 @@
+# 経費精算（情報フロー）: 申請 → 承認 → 支払い
+# pii は承認者・申請者への通知まで。監査ログには internal だけを流す。
+app expense_flow
+  stack nextjs, postgres
+  freedom guided
+  entity Employee
+    id: Id
+    name: String @pii
+    email: Email @pii
+    department: String @internal
+  entity Expense
+    id: Id
+    applicant: Employee
+    amount: Money @internal
+    status: ApprovalStatus
+    note: String @pii
+  policy
+    labels pii, internal, secret
+    sink notify(manager) accepts pii, internal
+    sink notify(applicant) accepts pii, internal
+    sink emit(audit) accepts internal
+    sink net(*) rejects secret
+  pattern crud Expenses
+    entity: Expense
+    access: employee
+    search: [id, status]
+    paginate: 20
+  pattern approval Expense
+    entity: Expense
+    approver: manager
+    on_approved: reimburse
+  custom reimburse
+    why "承認後に経費を支払い、仕訳を起票する"
+    lines 30

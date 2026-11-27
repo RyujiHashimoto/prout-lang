@@ -12,7 +12,7 @@ Repository: https://github.com/RyujiHashimoto/etsah
 
 The language is Etsah. For one minor version, `prout`, `proutc`, and `prout-mcp` still run and write a deprecation warning to stderr. `.prout` files still check. `import prout` and the other old module names re-export the `etsah` modules. The repository URL stays https://github.com/RyujiHashimoto/etsah.
 
-`python3 -m unittest discover -s tests` reports 448 tests, all passing, on Python 3.12.
+`python3 -m unittest discover -s tests` reports 473 tests, all passing, on Python 3.12.
 
 `action.yml` is a composite action. Another repository calls it with `uses: RyujiHashimoto/etsah@main` after `actions/checkout`. Tags are not published. The `verify` job calls the same action with `uses: ./` on a passing file and on `examples/ai_tasks_broken.etsah`.
 
@@ -83,6 +83,8 @@ python3 etsahc.py find "申請 承認"
 python3 etsahc.py build examples/shop.etsah
 python3 etsahc.py build examples/expense.etsah
 python3 etsahc.py build examples/ai_automation.etsah
+python3 etsahc.py build examples/data_policy.etsah
+python3 etsahc.py build examples/data_policy_leak.etsah  # exits 1 with E-POLICY
 python3 etsahc.py bench
 python3 growth_report.py
 ```
@@ -90,7 +92,10 @@ python3 growth_report.py
 `etsahc.py` subcommands are `build`, `find`, `add`, `index`, and
 `bench`. After `index`, `registry/index.json` must match the manifests;
 CI fails if that file is stale. Generated files under `patterns/build/`
-are gitignored. The registry has 27 manifests.
+are gitignored. The registry has 27 manifests. `build` writes
+`report.html`, `manifest.json`, and `security.json`; the security file
+records labels, flows, merged sinks, guarantees, unresolved items, and
+whether policy checks passed.
 
 Optional local install from the repository root. This does not upload
 the package:

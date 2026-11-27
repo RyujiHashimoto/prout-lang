@@ -1,0 +1,24 @@
+# 情報フロー検査に失敗する例: 承認者への通知で pii を許可していない。
+# `etsahc.py build` は E-POLICY を出して終了コード 1 を返す。
+app expense_flow_leak
+  stack nextjs, postgres
+  freedom guided
+  entity Employee
+    id: Id
+    name: String @pii
+    email: Email @pii
+  entity Expense
+    id: Id
+    applicant: Employee
+    amount: Money @internal
+    status: ApprovalStatus
+    note: String @pii
+  policy
+    labels pii, internal, secret
+    sink notify(manager) accepts internal
+    sink notify(applicant) accepts pii, internal
+    sink emit(audit) accepts internal
+    sink net(*) rejects secret
+  pattern approval Expense
+    entity: Expense
+    approver: manager

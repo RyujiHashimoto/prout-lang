@@ -276,6 +276,34 @@ jobs:
           grep -q "5000 <= 1000" /tmp/ai-automation.txt
           grep -q "a contract change has no approval gate" /tmp/ai-automation.txt
 
+      - name: Pattern information flow
+        working-directory: patterns
+        run: |
+          python3 etsahc.py build examples/data_policy.etsah --out /tmp/data-policy
+          python3 - <<'PY'
+          import json
+          security = json.load(open("/tmp/data-policy/security.json", encoding="utf-8"))
+          assert security["schema_version"] == 1
+          assert security["verified"] is True
+          assert "pii" in security["labels"]
+          assert "no pii to emit(audit)" in security["guarantees"]
+          assert any("custom reimburse" in item for item in security["unresolved"])
+          report = open("/tmp/data-policy/report.html", encoding="utf-8").read()
+          assert "情報フロー" in report
+          assert "notify(manager)" in report
+          PY
+          if python3 etsahc.py build examples/data_policy_leak.etsah --out /tmp/data-policy-leak > /tmp/data-policy-leak.txt 2>&1; then
+            echo "data policy leak unexpectedly passed"
+            exit 1
+          fi
+          grep -q "E-POLICY" /tmp/data-policy-leak.txt
+          python3 - <<'PY'
+          import json
+          security = json.load(open("/tmp/data-policy-leak/security.json", encoding="utf-8"))
+          assert security["verified"] is False
+          assert security["guarantees"] == []
+          PY
+
       - name: Build service desk examples
         working-directory: patterns
         run: |

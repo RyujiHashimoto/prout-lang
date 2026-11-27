@@ -25,12 +25,12 @@ The contract checker is `etsah.py`. The pattern checker is `patterns/etsahc.py`.
 | `E-IFLOW-SINK` | contract | A labeled value reaches a sink that rejects that label or does not accept it (`tests/test_information_flow.py`). |
 | `E-SINK` | contract | A `sends` clause is not on a native operation, or it names an unknown parameter, a `read`, or an effect the operation does not declare (`tests/test_information_flow.py`). |
 | `E-SINK-UNBOUND` | contract | A native operation moves labeled data and does not say which argument reaches an effect (`tests/test_information_flow.py`). |
-| `E-POLICY` | both | A contract allow list, gate, network host, budget, or rate limit is broken, or a pattern manifest policy fails (`examples/agents/support_reply_broken.etsah`). |
+| `E-POLICY` | both | A contract allow list, gate, network host, budget, or rate limit is broken; a pattern manifest policy fails; or a pattern `data_policy` requires a label the app policy does not allow (`patterns/examples/data_policy_leak.etsah`). |
 | `W-BUDGET` | contract | A task spends money and no `limit spend` gives that spend a decimal amount (`tests/test_ledger.py`). |
 | `E-ENTITY` | pattern | An entity has no fields, or it is missing a field a pattern needs. |
 | `E-TARGET` | pattern | A pattern names no entity, or the entity or slot target is not declared. |
 | `E-SLOT` | pattern | A required slot is missing, or its value is not one the pattern accepts. |
-| `W-POLICY` | pattern | A pattern policy warning: an exempt slot is set, and the message is not a legal opinion. |
+| `W-POLICY` | pattern | A pattern policy warning: an exempt slot is set and the message is not a legal opinion, or a labeled app contains a custom block whose implementation is trusted. |
 | `E-HOOK` | pattern | A hook points at a missing target, an ambiguous target, or a target that was not applied. |
 | `E-STACK` | pattern | The specification declares no stack target. |
 | `E-FREEDOM` | pattern | `freedom` is not `strict`, `guided`, or `open`, or strict mode contains a custom block. |

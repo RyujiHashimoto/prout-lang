@@ -407,6 +407,7 @@ Design and limits: [docs/staffing.md](docs/staffing.md). The contract layer can 
 - Effect completeness, network allow list, human gates for external mail, payment, and contract changes, integer-yen budgets, hourly rate limits, retry bounds, and a required audit hash.
 - `Decimal` and calendar `Date` in preconditions. `1/2` is still not given one meaning.
 - Information-flow labels, including implicit flow through `if` / `else` branches. A condition's labels become the program-counter label of the values returned inside it, of the statements that follow a branch which can return, and of the sinks those statements run. Programs that do not use labels keep their previous AST hash.
+- Pattern-layer information flow: fields carry `@pii`-style labels, an app `policy` block allows or rejects sinks, and each manifest declares a `data_policy`. `build` writes `security.json` with flows, merged sinks, guarantees, unresolved items, and a `verified` flag. A labeled app that uses a pattern without `data_policy` fails closed with `E-POLICY`.
 - Diagnostics an agent can repair from: code, location, expected, actual, suggestion.
 - Human HTML from the AST (`render.py`) and a static browser playground (`docs/playground/`).
 - Import of MCP and OpenAI tool lists into `op` declarations (`etsah import`).
@@ -416,7 +417,7 @@ Design and limits: [docs/staffing.md](docs/staffing.md). The contract layer can 
 
 ## Status
 
-Prototype. No release tag. Not published to PyPI. `build` emits a report, a demo, and a manifest. It does not emit API or database source. Cron does not run, budget counters are not stored, and there is no idempotency store. Branches are early returns only; there is no assignment, loop, or exception.
+Prototype. No release tag. Not published to PyPI. `build` emits a report, a demo, a manifest, and `security.json`. It does not emit API or database source. Cron does not run, budget counters are not stored, and there is no idempotency store. Branches are early returns only; there is no assignment, loop, or exception.
 
 ## Documentation
 

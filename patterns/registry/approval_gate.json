@@ -58,6 +58,15 @@
   "requires_target": true,
   "bound_roles": ["approver"],
   "effects": ["write(approvals)", "emit(audit)"],
+  "data_policy": {
+    "labels": ["pii", "internal"],
+    "sources": {"entity": ["pii", "internal"]},
+    "sinks": {
+      "emit(audit)": {"accepts": ["internal"]},
+      "notify(applicant)": {"accepts": ["pii", "internal"]}
+    },
+    "rejects": {}
+  },
   "artifacts": [
     {"path": "db/schema.sql#gate_{target_lower}", "kind": "SQL", "lines": 14, "desc": "{Entity}の承認待ち"},
     {"path": "api/gates/{target_lower}/route.ts", "kind": "API", "lines": 55, "desc": "承認と却下"},

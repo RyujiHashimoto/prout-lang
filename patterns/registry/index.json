@@ -158,6 +158,16 @@
           }
         ],
         "change_message": "a contract change has no approval gate"
+      },
+      "data_policy": {
+        "labels": [
+          "internal",
+          "pii",
+          "secret"
+        ],
+        "sinks": [
+          "emit(audit)"
+        ]
       }
     },
     {
@@ -207,7 +217,18 @@
         "examples/equipment_purchase.etsah",
         "bench/pc_lending.etsah"
       ],
-      "path": "registry/approval.json"
+      "path": "registry/approval.json",
+      "data_policy": {
+        "labels": [
+          "internal",
+          "pii"
+        ],
+        "sinks": [
+          "emit(audit)",
+          "notify(applicant)",
+          "notify(approver)"
+        ]
+      }
     },
     {
       "name": "approval_gate",
@@ -264,7 +285,17 @@
         "examples/ai_desk.etsah"
       ],
       "path": "registry/approval_gate.json",
-      "requires_target": true
+      "requires_target": true,
+      "data_policy": {
+        "labels": [
+          "internal",
+          "pii"
+        ],
+        "sinks": [
+          "emit(audit)",
+          "notify(applicant)"
+        ]
+      }
     },
     {
       "name": "archive",
@@ -360,7 +391,11 @@
         "examples/shop.etsah",
         "examples/expense.etsah"
       ],
-      "path": "registry/auth.json"
+      "path": "registry/auth.json",
+      "data_policy": {
+        "labels": [],
+        "sinks": []
+      }
     },
     {
       "name": "checklist",
@@ -504,7 +539,14 @@
       "examples": [
         "examples/shop.etsah"
       ],
-      "path": "registry/crud.json"
+      "path": "registry/crud.json",
+      "data_policy": {
+        "labels": [
+          "internal",
+          "pii"
+        ],
+        "sinks": []
+      }
     },
     {
       "name": "csv_export",
@@ -806,7 +848,16 @@
         "examples/travel_request.etsah",
         "examples/equipment_purchase.etsah"
       ],
-      "path": "registry/notify.json"
+      "path": "registry/notify.json",
+      "data_policy": {
+        "labels": [
+          "internal",
+          "pii"
+        ],
+        "sinks": [
+          "net(channel)"
+        ]
+      }
     },
     {
       "name": "overtime_agreement",

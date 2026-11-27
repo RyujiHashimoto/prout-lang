@@ -128,6 +128,16 @@
       "desc": "承認フローの契約テスト"
     }
   ],
+  "data_policy": {
+    "labels": ["pii", "internal"],
+    "sources": {"entity": ["pii", "internal"]},
+    "sinks": {
+      "notify(approver)": {"accepts": ["pii", "internal"]},
+      "notify(applicant)": {"accepts": ["pii", "internal"]},
+      "emit(audit)": {"accepts": ["internal"]}
+    },
+    "rejects": {}
+  },
   "examples": [
     "examples/expense.etsah",
     "examples/travel_request.etsah",
