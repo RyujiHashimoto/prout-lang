@@ -8,7 +8,7 @@ The Etsah rules used below are the ones in [SPEC.md](../../SPEC.md) and [the age
 
 ## What each system checks
 
-| System | What it checks | When | Where prout-lang differs |
+| System | What it checks | When | Where Etsah differs |
 |---|---|---|---|
 | [Eiffel](https://www.eiffel.org/doc/eiffel/ET-_Design_by_Contract_%28tm%29%2C_Assertions_and_Exceptions) | Preconditions (`require`), postconditions (`ensure`), class invariants, and other assertions. The Eiffel introduction says contracts can be monitored at run time under compilation options. | Runtime, when assertion monitoring is turned on for the compilation. | Eiffel monitors a routine's assertions while the routine runs. Etsah does not execute the task. It accepts or rejects the declaration before a run. |
 | [Dafny](https://github.com/dafny-lang/dafny/blob/master/docs/DafnyRef/Specifications.md) | `requires` and `ensures`. The reference says Dafny checks that preconditions are met at every call site, and that the implementation establishes the postcondition. The [tutorial](https://github.com/dafny-lang/dafny/blob/master/docs/OnlineTutorial/guide.md) shows a failed proof being rejected. | Static. The proof is attempted before the program is trusted to run. | Dafny proves that code meets a functional spec. Etsah does not prove that an `impl native` body matches its `eff` line. It checks the effects, budgets, and gates that were written down. |

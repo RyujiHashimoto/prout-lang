@@ -428,6 +428,7 @@ Prototype. No release tag. Not published to PyPI. `build` emits a report, a demo
 | [docs/en/comparison.md](docs/en/comparison.md) | English | Cedar, OPA, guardrails, effect systems |
 | [docs/en/mcp.md](docs/en/mcp.md) | English | MCP server and guard |
 | [docs/mcp.ja.md](docs/mcp.ja.md) | Japanese | MCP server and guard |
+| [docs/diagnostics.md](docs/diagnostics.md) | English | Every diagnostic code the contract and pattern checkers emit, with its layer and meaning. If it disagrees with `SPEC.md`, `SPEC.md` wins |
 | [docs/playground/index.html](docs/playground/index.html) | Browser | Static checker. Needs GitHub Pages to be public |
 | [docs/ai_automation.md](docs/ai_automation.md) | Japanese | Agent and task design |
 | [docs/information-flow.md](docs/information-flow.md) | Japanese | Label design and current limits |
